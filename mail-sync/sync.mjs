@@ -76,6 +76,7 @@ async function syncAccount({ user, pass }) {
   if (sentPath) records = records.concat(await readFolder(client, sentPath, 'out'));
   else console.warn(`⚠️  ${user}: cartella "Inviata" non trovata (solo ricevute).`);
   await client.logout();
+  records = records.map((r) => ({ ...r, mailbox: user }));
   console.log(`   ${user}: ${records.length} messaggi.`);
   return records;
 }
@@ -94,7 +95,7 @@ async function main() {
   let saved = 0;
   for (let i = 0; i < unique.length; i += 500) {
     const chunk = unique.slice(i, i + 500);
-    const { error } = await supabase.from('emails').upsert(chunk, { onConflict: 'message_id', ignoreDuplicates: true });
+    const { error } = await supabase.from('emails').upsert(chunk, { onConflict: 'message_id' });
     if (error) { console.error('❌ Errore salvataggio su Supabase:', error.message); process.exit(1); }
     saved += chunk.length;
   }
