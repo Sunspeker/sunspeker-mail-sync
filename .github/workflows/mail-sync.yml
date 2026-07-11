@@ -30,6 +30,8 @@ jobs:
         env:
           ARUBA_USER: ${{ secrets.ARUBA_USER }}
           ARUBA_PASS: ${{ secrets.ARUBA_PASS }}
+          ARUBA_USER_2: ${{ secrets.ARUBA_USER_2 }}
+          ARUBA_PASS_2: ${{ secrets.ARUBA_PASS_2 }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: node sync.mjs
