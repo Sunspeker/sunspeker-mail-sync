@@ -1,0 +1,35 @@
+name: Sincronizza email Aruba
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: mail-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scarica il codice
+        uses: actions/checkout@v4
+
+      - name: Prepara Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Installa le dipendenze
+        working-directory: mail-sync
+        run: npm install --no-audit --no-fund
+
+      - name: Sincronizza le email
+        working-directory: mail-sync
+        env:
+          ARUBA_USER: ${{ secrets.ARUBA_USER }}
+          ARUBA_PASS: ${{ secrets.ARUBA_PASS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node sync.mjs
