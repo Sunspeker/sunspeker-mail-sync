@@ -19,7 +19,7 @@ jobs:
       - name: Prepara Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Installa le dipendenze
         working-directory: mail-sync
