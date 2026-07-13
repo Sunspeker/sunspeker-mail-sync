@@ -42,6 +42,12 @@ async function retry(fn, label) {
   }
 }
 
+const mask = (email = '') => {
+  const [local, domain] = String(email).split('@');
+  const l = (local || '').slice(0, 2) + '***';
+  return domain ? `${l}@***` : l;
+};
+
 const firstAddr = (list) => (Array.isArray(list) && list[0]
   ? { email: (list[0].address || '').trim().toLowerCase(), name: (list[0].name || '').trim() }
   : { email: '', name: '' });
@@ -82,15 +88,15 @@ async function findSentPath(client) {
 async function syncAccount({ user, pass }) {
   const client = new ImapFlow({ host: ARUBA_HOST, port: Number(ARUBA_PORT), secure: true, auth: { user, pass }, logger: false });
   await client.connect();
-  console.log(`✅ Connesso: ${user}`);
+  console.log(`✅ Connesso: ${mask(user)}`);
   let records = [];
   records = records.concat(await readFolder(client, 'INBOX', 'in'));
   const sentPath = await findSentPath(client);
   if (sentPath) records = records.concat(await readFolder(client, sentPath, 'out'));
-  else console.warn(`⚠️  ${user}: cartella "Inviata" non trovata (solo ricevute).`);
+  else console.warn(`⚠️  ${mask(user)}: cartella "Inviata" non trovata (solo ricevute).`);
   await client.logout();
   records = records.map((r) => ({ ...r, mailbox: user }));
-  console.log(`   ${user}: ${records.length} messaggi.`);
+  console.log(`   ${mask(user)}: ${records.length} messaggi.`);
   return records;
 }
 
@@ -98,7 +104,7 @@ async function main() {
   let all = [];
   for (const acc of accounts) {
     try { all = all.concat(await syncAccount(acc)); }
-    catch (e) { console.error(`❌ Errore sulla casella ${acc.user}:`, e.message); }
+    catch (e) { console.error(`❌ Errore sulla casella ${mask(acc.user)}:`, e.message); }
   }
   if (!all.length) { console.log('Nessun messaggio da sincronizzare.'); return; }
 
