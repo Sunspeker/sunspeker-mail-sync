@@ -29,6 +29,19 @@ if (!accounts.length || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 const since = new Date(Date.now() - Number(SYNC_DAYS) * 86400000);
 
+async function retry(fn, label) {
+  const TRIES = 8;
+  for (let i = 1; i <= TRIES; i++) {
+    try { return await fn(); }
+    catch (e) {
+      if (i === TRIES) throw e;
+      const wait = Math.min(30000, 5000 * i);
+      console.warn(`⏳ ${label}: tentativo ${i}/${TRIES} fallito (${e.message}). Riprovo tra ${wait / 1000}s…`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+}
+
 const firstAddr = (list) => (Array.isArray(list) && list[0]
   ? { email: (list[0].address || '').trim().toLowerCase(), name: (list[0].name || '').trim() }
   : { email: '', name: '' });
@@ -95,8 +108,10 @@ async function main() {
   let saved = 0;
   for (let i = 0; i < unique.length; i += 500) {
     const chunk = unique.slice(i, i + 500);
-    const { error } = await supabase.from('emails').upsert(chunk, { onConflict: 'message_id' });
-    if (error) { console.error('❌ Errore salvataggio su Supabase:', error.message); process.exit(1); }
+    await retry(async () => {
+      const { error } = await supabase.from('emails').upsert(chunk, { onConflict: 'message_id' });
+      if (error) throw new Error(error.message);
+    }, 'Salvataggio Supabase');
     saved += chunk.length;
   }
   console.log(`💾 Completato: ${saved} messaggi da ${accounts.length} casella/e.`);
