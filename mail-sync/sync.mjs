@@ -48,9 +48,18 @@ const mask = (email = '') => {
   return domain ? `${l}@***` : l;
 };
 
-const firstAddr = (list) => (Array.isArray(list) && list[0]
-  ? { email: (list[0].address || '').trim().toLowerCase(), name: (list[0].name || '').trim() }
-  : { email: '', name: '' });
+const ownDomains = new Set(accounts.map((a) => (a.user.split('@')[1] || '').toLowerCase()).filter(Boolean));
+const asAddrs = (list) => (Array.isArray(list) ? list : [])
+  .map((a) => ({ email: (a.address || '').trim().toLowerCase(), name: (a.name || '').trim() }))
+  .filter((x) => x.email);
+const isExternal = (p) => p.email && !ownDomains.has(p.email.split('@')[1]);
+
+function pickCounterpart(env, direction) {
+  const from = asAddrs(env.from);
+  const recipients = [...asAddrs(env.to), ...asAddrs(env.cc), ...asAddrs(env.bcc)];
+  if (direction === 'out') return recipients.find(isExternal) || recipients[0] || null;
+  return from.find(isExternal) || from[0] || recipients.find(isExternal) || recipients[0] || null;
+}
 
 async function readFolder(client, path, direction) {
   const out = [];
@@ -61,8 +70,8 @@ async function readFolder(client, path, direction) {
     uids = uids.slice(-Number(MAX_PER_FOLDER));
     for await (const msg of client.fetch(uids, { envelope: true }, { uid: true })) {
       const env = msg.envelope || {};
-      const party = direction === 'out' ? firstAddr(env.to) : firstAddr(env.from);
-      if (!party.email) continue;
+      const party = pickCounterpart(env, direction);
+      if (!party || !party.email) continue;
       out.push({
         message_id: env.messageId || `${path}:${msg.uid}`,
         direction,
