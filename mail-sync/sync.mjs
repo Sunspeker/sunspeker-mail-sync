@@ -157,13 +157,37 @@ async function loadSnippetSet() {
   return set;
 }
 
+async function reconcileDeletions(all) {
+  const currentIds = new Set(all.map((r) => r.message_id));
+  const minScanned = all.reduce((m, r) => (r.sent_at && (!m || r.sent_at < m) ? r.sent_at : m), null);
+  if (!minScanned) return;
+  const toDelete = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase.from('emails')
+      .select('message_id').gte('sent_at', minScanned).range(from, from + pageSize - 1);
+    if (error) { console.warn('⚠️  riconciliazione saltata:', error.message); return; }
+    for (const r of (data || [])) if (!currentIds.has(r.message_id)) toDelete.push(r.message_id);
+    if (!data || data.length < pageSize) break;
+  }
+  for (let i = 0; i < toDelete.length; i += 200) {
+    const chunk = toDelete.slice(i, i + 200);
+    await retry(async () => {
+      const { error } = await supabase.from('emails').delete().in('message_id', chunk);
+      if (error) throw new Error(error.message);
+    }, 'Rimozione Supabase');
+  }
+  if (toDelete.length) console.log(`🗑️  Rimosse ${toDelete.length} email non più presenti nelle caselle.`);
+}
+
 async function main() {
   const haveSnippet = await loadSnippetSet();
   const budget = { n: Number(MAX_BODIES) || 0 };
   let all = [];
+  let allOk = true;
   for (const acc of accounts) {
     try { all = all.concat(await syncAccount(acc, haveSnippet, budget)); }
-    catch (e) { console.error(`❌ Errore sulla casella ${mask(acc.user)}:`, e.message); }
+    catch (e) { allOk = false; console.error(`❌ Errore sulla casella ${mask(acc.user)}:`, e.message); }
   }
   if (!all.length) { console.log('Nessun messaggio da sincronizzare.'); return; }
 
@@ -179,7 +203,10 @@ async function main() {
     }, 'Salvataggio Supabase');
     saved += chunk.length;
   }
-  console.log(`💾 Completato: ${saved} messaggi da ${accounts.length} casella/e.`);
+  console.log(`💾 Salvati ${saved} messaggi da ${accounts.length} casella/e.`);
+
+  if (allOk) await reconcileDeletions(all);
+  else console.warn('⚠️  Riconciliazione saltata: non tutte le caselle sono state lette.');
 }
 
 main().catch((e) => { console.error('❌ Errore:', e.message); process.exit(1); });
