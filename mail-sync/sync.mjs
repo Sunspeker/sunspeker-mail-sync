@@ -108,6 +108,7 @@ async function readFolder(client, path, direction, haveSnippet, budget) {
             const parsed = await simpleParser(msg.source);
             const text = parsed.text || (parsed.html ? parsed.html.replace(/<[^>]+>/g, ' ') : '');
             r.snippet = makeSnippet(text);
+            r.body_text = String(text || '').replace(/\r\n/g, '\n').trim().slice(0, 30000);
           } catch { /* singolo messaggio non parsabile */ }
         }
       } catch (e) { console.warn(`⚠️  anteprima corpo non riuscita in "${path}": ${e.message}`); }
@@ -147,7 +148,7 @@ async function loadSnippetSet() {
     const pageSize = 1000;
     for (let from = 0; ; from += pageSize) {
       const { data, error } = await supabase.from('emails')
-        .select('message_id').not('snippet', 'is', null).neq('snippet', '')
+        .select('message_id').not('body_text', 'is', null).neq('body_text', '')
         .range(from, from + pageSize - 1);
       if (error) break;
       (data || []).forEach((r) => set.add(r.message_id));
