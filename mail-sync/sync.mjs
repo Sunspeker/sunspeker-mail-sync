@@ -20,8 +20,8 @@ const {
   ARUBA_PORT = '993',
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
-  SYNC_DAYS = '365',
-  MAX_PER_FOLDER = '2000',
+  SYNC_DAYS = '1825',
+  MAX_PER_FOLDER = '6000',
   MAX_BODIES = '400',           // quante anteprime-corpo scaricare per ogni giro
 } = process.env;
 
