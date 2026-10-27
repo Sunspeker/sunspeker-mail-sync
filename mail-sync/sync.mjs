@@ -20,17 +20,11 @@ const {
   ARUBA_PORT = '993',
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
-  // Finestra di sincronizzazione: email più vecchie di così non vengono MAI
-  // lette, nemmeno se sono ancora nella casella (vedi "since" sotto). Era 365
-  // giorni: un contatto del 2024 restava fuori. Alzata a 5 anni; MAX_PER_FOLDER
-  // alzato di conseguenza, altrimenti con una finestra larga e tanti messaggi
-  // si prendono solo i 2000 più recenti e i più vecchi restano comunque fuori.
   SYNC_DAYS = '1825',
   MAX_PER_FOLDER = '6000',
-  MAX_BODIES = '400',           // quante anteprime-corpo scaricare per ogni giro
+  MAX_BODIES = '400',
 } = process.env;
 
-// Raccoglie una o più caselle dai secrets (ARUBA_USER[_2.._5] / ARUBA_PASS[_2.._5]).
 function collectAccounts() {
   const accounts = [];
   for (const s of ['', '_2', '_3', '_4', '_5']) {
@@ -50,8 +44,6 @@ if (!accounts.length || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 const since = new Date(Date.now() - Number(SYNC_DAYS) * 86400000);
 
-// Riprova un'operazione fallita (es. Supabase momentaneamente irraggiungibile),
-// con attese crescenti, così un progetto in pausa ha il tempo di riattivarsi.
 async function retry(fn, label) {
   const TRIES = 8;
   for (let i = 1; i <= TRIES; i++) {
@@ -65,28 +57,18 @@ async function retry(fn, label) {
   }
 }
 
-// Maschera un indirizzo per i log (es. "sales@ditta.it" -> "sa***@***"),
-// così anche in un repository pubblico i log non rivelano gli indirizzi.
 const mask = (email = '') => {
   const [local, domain] = String(email).split('@');
   const l = (local || '').slice(0, 2) + '***';
   return domain ? `${l}@***` : l;
 };
 
-// Domini aziendali (delle caselle sincronizzate): per capire chi è "esterno".
 const ownDomains = new Set(accounts.map((a) => (a.user.split('@')[1] || '').toLowerCase()).filter(Boolean));
 const asAddrs = (list) => (Array.isArray(list) ? list : [])
   .map((a) => ({ email: (a.address || '').trim().toLowerCase(), name: (a.name || '').trim() }))
   .filter((x) => x.email);
 const isExternal = (p) => p.email && !ownDomains.has(p.email.split('@')[1]);
 
-// Sceglie la controparte considerando anche CC e CCN (BCC), preferendo SEMPRE
-// un indirizzo esterno all'azienda, sia che sia il mittente sia che sia tra i
-// destinatari/copie. Per le inviate: primo destinatario esterno (A → CC → CCN).
-// Per le ricevute: mittente esterno, altrimenti il primo destinatario/copia
-// esterno (caso tipico: un collega scrive a un cliente mettendo sales/hello in
-// copia — qui il mittente è interno, il cliente esterno va cercato tra i
-// destinatari, NON va scelto il collega come fallback prima di provarci).
 function pickCounterpart(env, direction) {
   const from = asAddrs(env.from);
   const recipients = [...asAddrs(env.to), ...asAddrs(env.cc), ...asAddrs(env.bcc)];
@@ -94,8 +76,6 @@ function pickCounterpart(env, direction) {
   return from.find(isExternal) || recipients.find(isExternal) || from[0] || recipients[0] || null;
 }
 
-// Ricava un breve riassunto/anteprima dal testo della mail: toglie il testo
-// citato e le firme di reply, comprime gli spazi e taglia a ~280 caratteri.
 function makeSnippet(text) {
   if (!text) return '';
   const kept = [];
@@ -108,21 +88,12 @@ function makeSnippet(text) {
   return kept.join(' ').replace(/\s+/g, ' ').trim().slice(0, 280);
 }
 
-// Legge una cartella in modo INCREMENTALE quando possibile: se conosciamo
-// già l'ultimo UID letto in un giro precedente (e la cartella non ha
-// cambiato "uidvalidity", cioè non è stata ricreata), chiediamo al server
-// solo gli UID più nuovi di quello, invece di rileggere ogni volta le
-// intestazioni di tutti i messaggi nella finestra SYNC_DAYS. Senza questo,
-// ogni sincronizzazione (anche quella avviata a mano dal CRM) impiegava
-// diversi minuti ed era quindi sempre "in corso" quando l'utente si
-// aspettava di vedere comparire un'email appena inviata/ricevuta.
-// Ritorna { records, uidValidity, lastUid } (lastUid invariato se non ci
-// sono messaggi nuovi, così il prossimo giro riparte da dove eravamo).
 async function readFolder(client, path, direction, haveSnippet, budget, priorState) {
   const out = [];
+  let uidValidity, newLastUid;
   const lock = await client.getMailboxLock(path);
   try {
-    const uidValidity = client.mailbox?.uidValidity != null ? Number(client.mailbox.uidValidity) : null;
+    uidValidity = client.mailbox?.uidValidity != null ? Number(client.mailbox.uidValidity) : null;
     const prior = (priorState && uidValidity != null && String(priorState.uid_validity) === String(uidValidity))
       ? priorState.last_uid : null;
     let uids;
@@ -130,14 +101,11 @@ async function readFolder(client, path, direction, haveSnippet, budget, priorSta
       uids = await client.search({ uid: `${prior + 1}:*` }, { uid: true });
       uids = (uids || []).filter((u) => u > prior);
     } else {
-      // Primo giro per questa cartella (o "uidvalidity" cambiata): scansione
-      // completa della finestra SYNC_DAYS, come prima.
       uids = await client.search({ since }, { uid: true });
     }
-    const newLastUid = uids && uids.length ? Math.max(prior || 0, ...uids) : (prior || 0);
+    newLastUid = uids && uids.length ? Math.max(prior || 0, ...uids) : (prior || 0);
     if (!uids || !uids.length) return { records: out, uidValidity, lastUid: newLastUid };
     uids = uids.slice(-Number(MAX_PER_FOLDER));
-    // Fase 1: solo intestazioni (veloce).
     for await (const msg of client.fetch(uids, { envelope: true }, { uid: true })) {
       const env = msg.envelope || {};
       const party = pickCounterpart(env, direction);
@@ -149,9 +117,6 @@ async function readFolder(client, path, direction, haveSnippet, budget, priorSta
         direction,
         counterpart_email: party.email,
         counterpart_name: party.name,
-        // Mittente/destinatari/copia originali: servono al CRM per capire se
-        // tocca a noi rispondere (mittente esterno) o attendiamo risposta
-        // (mittente interno, azienda o collega, verso un destinatario esterno).
         from_email: from ? from.email : null,
         from_name: from ? from.name : null,
         to_addrs: asAddrs(env.to),
@@ -160,8 +125,6 @@ async function readFolder(client, path, direction, haveSnippet, budget, priorSta
         sent_at: env.date ? new Date(env.date).toISOString() : null,
       });
     }
-    // Fase 2: anteprima del corpo, SOLO per i messaggi nuovi (senza snippet) ed
-    // entro il budget. È fail-safe: se qualcosa va storto, l'email resta senza anteprima.
     const need = out.filter((r) => !haveSnippet.has(r.message_id));
     const take = need.slice(-Math.max(0, budget.n));
     if (take.length) {
@@ -174,7 +137,6 @@ async function readFolder(client, path, direction, haveSnippet, budget, priorSta
             const parsed = await simpleParser(msg.source);
             const text = parsed.text || (parsed.html ? parsed.html.replace(/<[^>]+>/g, ' ') : '');
             r.snippet = makeSnippet(text);
-            // Testo completo (per l'esportazione Excel), limitato per sicurezza.
             r.body_text = String(text || '').replace(/\r\n/g, '\n').trim().slice(0, 30000);
           } catch { /* singolo messaggio non parsabile */ }
         }
@@ -182,7 +144,6 @@ async function readFolder(client, path, direction, haveSnippet, budget, priorSta
       budget.n -= take.length;
     }
   } finally { lock.release(); }
-  // Toglie il campo interno _uid prima di salvare.
   return { records: out.map(({ _uid, ...r }) => r), uidValidity, lastUid: newLastUid };
 }
 
@@ -195,9 +156,6 @@ async function findSentPath(client) {
   return byName ? byName.path : null;
 }
 
-// Stato di sincronizzazione (ultimo UID letto per casella+cartella), da
-// mail_sync_state: resiliente se la migrazione non è ancora stata eseguita
-// (tabella assente), in tal caso ogni giro ricade sulla scansione completa.
 async function loadSyncState() {
   const map = new Map();
   try {
@@ -222,23 +180,24 @@ async function syncAccount({ user, pass }, haveSnippet, budget, syncState) {
   console.log(`✅ Connesso: ${mask(user)}`);
   let records = [];
   const stateUpdates = [];
-  const inboxResult = await readFolder(client, 'INBOX', 'in', haveSnippet, budget, syncState.get(`${user}:INBOX`));
-  records = records.concat(inboxResult.records);
-  stateUpdates.push({ mailbox: user, folder: 'INBOX', uid_validity: inboxResult.uidValidity, last_uid: inboxResult.lastUid });
-  const sentPath = await findSentPath(client);
-  if (sentPath) {
-    const sentResult = await readFolder(client, sentPath, 'out', haveSnippet, budget, syncState.get(`${user}:${sentPath}`));
-    records = records.concat(sentResult.records);
-    stateUpdates.push({ mailbox: user, folder: sentPath, uid_validity: sentResult.uidValidity, last_uid: sentResult.lastUid });
-  } else console.warn(`⚠️  ${mask(user)}: cartella "Inviata" non trovata (solo ricevute).`);
-  await client.logout();
-  // Registra la casella aziendale di provenienza (es. sales@ / hello@).
+  try {
+    const inboxResult = await readFolder(client, 'INBOX', 'in', haveSnippet, budget, syncState.get(`${user}:INBOX`));
+    records = records.concat(inboxResult.records);
+    stateUpdates.push({ mailbox: user, folder: 'INBOX', uid_validity: inboxResult.uidValidity, last_uid: inboxResult.lastUid });
+    const sentPath = await findSentPath(client);
+    if (sentPath) {
+      const sentResult = await readFolder(client, sentPath, 'out', haveSnippet, budget, syncState.get(`${user}:${sentPath}`));
+      records = records.concat(sentResult.records);
+      stateUpdates.push({ mailbox: user, folder: sentPath, uid_validity: sentResult.uidValidity, last_uid: sentResult.lastUid });
+    } else console.warn(`⚠️  ${mask(user)}: cartella "Inviata" non trovata (solo ricevute).`);
+  } finally {
+    client.close();
+  }
   records = records.map((r) => ({ ...r, mailbox: user }));
   console.log(`   ${mask(user)}: ${records.length} messaggi nuovi/modificati.`);
   return { records, stateUpdates };
 }
 
-// Message_id che hanno già il testo completo salvato (per non riscaricare il corpo).
 async function loadSnippetSet() {
   const set = new Set();
   try {
@@ -255,10 +214,6 @@ async function loadSnippetSet() {
   return set;
 }
 
-// Rimuove dal DB le email non più presenti nelle caselle (eliminate o spostate
-// fuori dalla Posta in arrivo/Inviata), limitandosi alla finestra scansionata.
-// Gira SOLO se tutte le caselle sono state lette correttamente, per non
-// cancellare per sbaglio i messaggi di una casella momentaneamente irraggiungibile.
 async function reconcileDeletions(all) {
   const currentIds = new Set(all.map((r) => r.message_id));
   const minScanned = all.reduce((m, r) => (r.sent_at && (!m || r.sent_at < m) ? r.sent_at : m), null);
@@ -295,9 +250,6 @@ async function main() {
       all = all.concat(records);
       pendingStateUpdates = pendingStateUpdates.concat(stateUpdates);
     } catch (e) {
-      // Se una casella fallisce, continua con le altre (ma niente riconciliazione,
-      // e il suo "ultimo UID letto" non avanza: verrà ritentata dall'inizio
-      // del punto in cui era arrivata, non perde messaggi).
       allOk = false;
       console.error(`❌ Errore sulla casella ${mask(acc.user)}:`, e.message);
     }
@@ -308,7 +260,6 @@ async function main() {
     return;
   }
 
-  // Dedup locale per message_id (una stessa email può toccare più caselle).
   const seen = new Set();
   const unique = all.filter((r) => (seen.has(r.message_id) ? false : seen.add(r.message_id)));
 
@@ -322,9 +273,6 @@ async function main() {
     saved += chunk.length;
   }
   console.log(`💾 Salvati ${saved} messaggi da ${accounts.length} casella/e.`);
-  // Avanza "l'ultimo UID letto" solo DOPO che i messaggi sono stati salvati
-  // con successo, così un errore di salvataggio non fa perdere messaggi al
-  // giro successivo (verrebbero comunque riletti).
   await saveSyncState(pendingStateUpdates);
 
   if (allOk) await reconcileDeletions(all);
