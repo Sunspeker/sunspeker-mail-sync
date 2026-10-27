@@ -1,10 +1,14 @@
 name: Sincronizza email Aruba
 
+# Gira automaticamente (e si può avviare a mano da GitHub).
+# NB: i cron di GitHub sono "best-effort" e possono ritardare: con repo PUBBLICO
+# (minuti illimitati) conviene un intervallo frequente per compensare.
 on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
+# Evita esecuzioni sovrapposte.
 concurrency:
   group: mail-sync
   cancel-in-progress: false
@@ -12,6 +16,11 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # Se mai si bloccasse di nuovo (es. un bug futuro lascia la connessione
+    # email aperta), GitHub lo interrompe dopo 15 minuti invece di lasciarlo
+    # appeso per ore, bloccando tutte le sincronizzazioni successive in coda
+    # (concurrency qui sopra fa aspettare, non cancella, le esecuzioni dopo).
+    timeout-minutes: 15
     steps:
       - name: Scarica il codice
         uses: actions/checkout@v4
